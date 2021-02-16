@@ -3,13 +3,15 @@ package hutch
 import (
 	"context"
 	"fmt"
-	"github.com/streadway/amqp"
 	"sync"
+
+	"github.com/streadway/amqp"
 )
 
 type Queue interface {
 	Subscribe(cancelCtx context.Context, handlerFunc MessageHandlerFunc) error
 	Bind(Exchange, string) error
+	WG() *sync.WaitGroup
 }
 
 type queue struct {
@@ -41,7 +43,7 @@ func (b *Broker) NewQueue(name string) (Queue, error) {
 		name: name,
 		ch:   ch,
 		q:    &qd,
-		wg: &sync.WaitGroup{},
+		wg:   &sync.WaitGroup{},
 	}
 
 	return &q, nil
@@ -57,7 +59,11 @@ func (q queue) Bind(ex Exchange, key string) error {
 
 type MessageHandlerFunc func(m RawMessage)
 
-func (q queue) Subscribe(cancelCtx context.Context, handlerFunc MessageHandlerFunc) error {
+func (q *queue) WG() *sync.WaitGroup {
+	return q.wg
+}
+
+func (q *queue) Subscribe(cancelCtx context.Context, handlerFunc MessageHandlerFunc) error {
 
 	err := q.ch.Qos(1, 0, false)
 	if err != nil {
@@ -73,6 +79,8 @@ func (q queue) Subscribe(cancelCtx context.Context, handlerFunc MessageHandlerFu
 			return err
 		}
 
+		q.wg.Add(1)
+
 		go func() {
 			defer q.wg.Done()
 			for {
@@ -85,8 +93,8 @@ func (q queue) Subscribe(cancelCtx context.Context, handlerFunc MessageHandlerFu
 						return
 					}
 					raw := &rawMessage{
-						raw: msg.Body,
-						id: msg.MessageId,
+						raw:  msg.Body,
+						id:   msg.MessageId,
 						kind: msg.Type,
 					}
 					err := RawUnmarshal(msg.Body, raw)
@@ -98,8 +106,6 @@ func (q queue) Subscribe(cancelCtx context.Context, handlerFunc MessageHandlerFu
 			}
 		}()
 	}
-
-	q.wg.Wait()
 
 	if connectionDropped {
 		return nil
